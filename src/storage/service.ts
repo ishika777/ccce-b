@@ -211,7 +211,7 @@ export async function renameItem(fullPath: string, newName: string): Promise<{ s
                 if (error || !items) return [];
 
                 const results: string[] = [];
-            
+
                 for (const item of items) {
                     const itemPath = `${prefix}/${item.name}`;
                     if (item.metadata) {
@@ -273,7 +273,6 @@ export async function updateFileContent(fullPath: string, content: string): Prom
     return true;
 }
 
-//handled
 export async function createNewFileOrFolder(
     name: string,
     type: "file" | "folder",
@@ -299,7 +298,7 @@ export async function createNewFileOrFolder(
     }
 }
 
-//handled
+
 export async function deleteFileOrFolder(path: string): Promise<void> {
     const isFile = path.split("/").pop()?.includes(".");
 
@@ -348,3 +347,38 @@ export async function deleteFileOrFolder(path: string): Promise<void> {
 }
 
 
+export async function getFolderSizeInMB(userId: string, virtualBoxId: string): Promise<number> {
+    const prefix = `${userId}/${virtualBoxId}`;
+
+    async function walk(path: string): Promise<number> {
+        let total = 0;
+        let offset = 0;
+        const limit = 1000;
+
+        while (true) {
+            const { data, error } = await supabase.storage
+                .from('file-storage')
+                .list(path, { limit, offset });
+
+            if (error) throw new Error(`Failed to list "${path}": ${error.message}`);
+            if (!data || data.length === 0) break;
+
+            for (const item of data) {
+                if (item.metadata?.size !== undefined) {
+                    total += item.metadata.size;
+                } else {
+                    total += await walk(`${path}/${item.name}`);
+                }
+            }
+
+            if (data.length < limit) break;
+            offset += limit;
+        }
+
+        return total;
+    }
+
+    const totalBytes = await walk(prefix);
+    const sizeInMB = totalBytes / (1024 * 1024);
+    return parseFloat(sizeInMB.toFixed(2)); // Return MB as number, rounded to 2 decimals
+}
