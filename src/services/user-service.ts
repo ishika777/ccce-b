@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { db } from "../database";
 import { user as userModel } from "../database/schema";
+import { eq } from "drizzle-orm";
 
 export const getAllUsers = async () => {
     const data = await db.select().from(userModel).all();
@@ -46,7 +47,18 @@ export const createUser = async (data: DataType) => {
     return user;
 }
 
+export const deleteUserById = async (id: string) => {
+    const idSchema = z.string().min(1, "User ID is required");
+    const userId = idSchema.parse(id);
+
+    return await db
+        .delete(userModel)
+        .where(eq(userModel.id, userId))
+        .returning()
+        .get();
+
+};
 
 export const deleteAllUsers = async () => {
-    await db.delete(userModel);
+    return await db.delete(userModel).returning().get()
 };

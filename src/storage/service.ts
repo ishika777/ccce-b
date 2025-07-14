@@ -1,5 +1,90 @@
 import { TFolder } from '../types';
 import { supabase } from './supabaseClient';
+import JSZip from "jszip";
+
+const listAllFiles = async (path: string, collectedPaths: string[] = []) => {
+    const { data, error } = await supabase.storage.from('file-storage').list(path, { limit: 1000 });
+
+    if (error) throw new Error(`Failed to list files in ${path}: ${error.message}`);
+
+    for (const item of data) {
+        const fullPath = `${path}/${item.name}`;
+        if (item.metadata && item.metadata.size === 0 && item.name.includes(".")) {
+            collectedPaths.push(fullPath);
+        } else if (item.name.includes(".")) {
+            collectedPaths.push(fullPath);
+        } else {
+            // It's a subfolder — recursively list its contents
+            await listAllFiles(fullPath, collectedPaths);
+        }
+    }
+
+    return collectedPaths;
+};
+
+export async function getSignedUrl(userId: string, virtualBoxId: string, fileName = 'project.zip') {
+    const filePath = `${userId}/${virtualBoxId}/${fileName}`;
+
+    const { data, error } = await supabase.storage
+        .from('file-storage')
+        .createSignedUrl(filePath, 60 * 60); // 1 hour expiry (3600 seconds)
+
+    if (error) {
+        throw new Error(`Failed to create signed URL: ${error.message}`);
+    }
+
+    return data.signedUrl;
+}
+
+
+export async function createProjectZip(userId: string, virtualBoxId: string): Promise<Buffer> {
+    const baseFolder = `${userId}/${virtualBoxId}`;
+    const zip = new JSZip();
+
+    const files = await listAllFiles(baseFolder);
+
+    // Download each file and add to zip
+    await Promise.all(
+        files.map(async (filePath) => {
+            const relativePath = filePath.slice(baseFolder.length + 1); // remove prefix + slash
+
+            const { data, error } = await supabase.storage.from('file-storage').download(filePath);
+            if (error) throw new Error(`Failed to download ${filePath}: ${error.message}`);
+
+            const buffer = await data.arrayBuffer();
+            zip.file(relativePath, Buffer.from(buffer));
+        })
+    );
+
+    return zip.generateAsync({ type: "nodebuffer" });
+}
+
+export async function uploadProjectZip(userId: string, virtualBoxId: string, zipBuffer: Buffer): Promise<string> {
+    const filePath = `${userId}/${virtualBoxId}/project.zip`;
+
+    const { error: deleteError } = await supabase.storage
+        .from('file-storage')
+        .remove([filePath]);
+
+    if (deleteError) {
+        throw new Error(`Failed to delete files in ${filePath}: ${deleteError.message}`);
+    }
+
+    const { error } = await supabase.storage
+        .from("file-storage")
+        .upload(filePath, zipBuffer, {
+            upsert: true,
+            contentType: "application/zip",
+        });
+
+    if (error) {
+        throw new Error(`Upload failed: ${error.message}`);
+    }
+
+    const publicUrl = `${process.env.SUPABASE_URL}/storage/v1/object/public/file-storage/${filePath}`;
+    return publicUrl;
+}
+
 
 type StarterFile = {
     name: string;
@@ -40,34 +125,17 @@ export async function uploadStarterFiles(userId: string, virtualBoxId: string, f
     }
 }
 
+
+
+
 export async function deleteVirtualBox(userId: string, virtualBoxId: string): Promise<void> {
+
     const folderPath = `${userId}/${virtualBoxId}`;
-
-    const listAllFiles = async (path: string, collectedPaths: string[] = []) => {
-        const { data, error } = await supabase.storage.from('file-storage').list(path, { limit: 1000 });
-
-        if (error) throw new Error(`Failed to list files in ${path}: ${error.message}`);
-
-        for (const item of data) {
-            const fullPath = `${path}/${item.name}`;
-            if (item.metadata && item.metadata.size === 0 && item.name.includes(".")) {
-                collectedPaths.push(fullPath);
-            } else if (item.name.includes(".")) {
-                collectedPaths.push(fullPath);
-            } else {
-                // It's a subfolder — recursively list its contents
-                await listAllFiles(fullPath, collectedPaths);
-            }
-        }
-
-        return collectedPaths;
-    };
 
     const filePathsToDelete = await listAllFiles(folderPath);
 
     if (filePathsToDelete.length === 0) {
         throw new Error(`No files found in ${folderPath}`);
-        return;
     }
 
     const { error: deleteError } = await supabase.storage
@@ -81,28 +149,9 @@ export async function deleteVirtualBox(userId: string, virtualBoxId: string): Pr
 }
 
 export async function deleteUserStorageFolder(userId: string): Promise<void> {
-    // Recursively collect all file paths under the userId folder
-    const listAllFiles = async (path: string, collectedPaths: string[] = []) => {
-        const { data, error } = await supabase.storage.from('file-storage').list(path, { limit: 1000 });
-
-        if (error) throw new Error(`Failed to list files in ${path}: ${error.message}`);
-
-        for (const item of data) {
-            const fullPath = `${path}/${item.name}`;
-            if (item.metadata && item.metadata.size === 0 && item.name.includes(".")) {
-                collectedPaths.push(fullPath);
-            } else if (item.name.includes(".")) {
-                collectedPaths.push(fullPath);
-            } else {
-                // It's a folder, go deeper
-                await listAllFiles(fullPath, collectedPaths);
-            }
-        }
-
-        return collectedPaths;
-    };
 
     const userFolderPath = `${userId}`;
+
     const filesToDelete = await listAllFiles(userFolderPath);
 
     if (filesToDelete.length === 0) {
@@ -116,10 +165,10 @@ export async function deleteUserStorageFolder(userId: string): Promise<void> {
         throw new Error(`Failed to delete files for userId: ${userId} - ${deleteError.message}`);
     }
 
-    console.log(`Successfully deleted all files for userId: ${userId}`);
 }
 
 export async function getFileContentByFullPath(fullPath: string): Promise<string> {
+
     const { data, error } = await supabase.storage
         .from("file-storage")
         .download(fullPath);
@@ -128,9 +177,10 @@ export async function getFileContentByFullPath(fullPath: string): Promise<string
         throw new Error(`Failed to fetch file at ${fullPath}: ${error?.message}`);
     }
 
-    const text = await data.text(); // assuming it's a text file
+    const text = await data.text();
     return text;
 }
+
 
 export async function buildFolderTree(prefix: string, name: string): Promise<TFolder> {
     const folderId = crypto.randomUUID();
@@ -155,7 +205,6 @@ export async function buildFolderTree(prefix: string, name: string): Promise<TFo
         const fullPath = prefix ? `${prefix}/${item.name}` : item.name;
 
         if (item.metadata) {
-            // It's a file
             const fileId = crypto.randomUUID();
             folder.children.push({
                 id: fileId,
@@ -178,7 +227,6 @@ export async function getFolderTreeInVirtualBox(userId: string, virtualBoxId: st
 
     return await buildFolderTree(rootPrefix, rootFolderName);
 }
-
 
 export async function renameItem(fullPath: string, newName: string): Promise<{ success: boolean, pathMap: Record<string, string> }> {
     const parts = fullPath.split("/");
@@ -297,7 +345,6 @@ export async function createNewFileOrFolder(
         throw new Error(`Supabase ${type} upload failed: ${error.message}`);
     }
 }
-
 
 export async function deleteFileOrFolder(path: string): Promise<void> {
     const isFile = path.split("/").pop()?.includes(".");

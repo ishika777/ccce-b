@@ -2,6 +2,12 @@ import { db } from "../database";
 import { user, virtualBox, usersToVirtualboxes } from "../database/schema"
 import { eq, and, sql } from "drizzle-orm";
 
+export const deleteAllVirtualBoxes = async () => {
+    return await db.delete(virtualBox).returning().get();
+}
+
+
+
 export const getAllVirtualBoxByUser = async (id: string) => {
     return await db.query.virtualBox.findMany({
         where: (vb, { eq }) => eq(vb.userId, id),
@@ -26,6 +32,7 @@ export const getVirtualBoxByName = async (name: string) => {
 export const getAllVirtualBoxes = async () => {
     return await db.select().from(virtualBox).all();
 };
+
 
 export const deleteAllVirtualBoxesByUser = async (userId: string) => {
     return await db.delete(virtualBox).where(eq(virtualBox.userId, userId));
@@ -165,7 +172,6 @@ export const incrementGenerations = async (userId: string) => {
 
 export const deleteUTVData = async () => {
     const allData = await db.select().from(usersToVirtualboxes).all();
-    console.log("All data in usersToVirtualboxes:", allData);
 
     if (allData.length === 0) {
         return;

@@ -16,21 +16,32 @@ import {
     deleteUTVData,
     getVirtualBoxesSharedToMe,
     getUsersSharedByMe,
+    deleteAllVirtualBoxes,
 } from "../services/virtualBox-service";
 import { getUserWithEmail, getUserWithId } from "../services/user-service";
 import { deleteStorage, deleteUserStorage, initStorage } from "../services/storage-service";
 
 const router = express.Router();
 
+router.delete("/whole", async (req, res) => {
+    try {
+        const all = await deleteAllVirtualBoxes();
+        res.status(200).json(all);
+    } catch (err: any) {
+        res.status(500).json({ message: err.message });
 
-// router.get("/", async (req, res) => {
-//     try {
-//         const all = await getAllVirtualBoxes();
-//         res.status(200).json(all);
-//     } catch (err: any) {
-//         res.status(500).json({ message: err.message });
-//     }
-// });
+    }
+})
+
+
+router.get("/", async (req, res) => {
+    try {
+        const all = await getAllVirtualBoxes();
+        res.status(200).json(all);
+    } catch (err: any) {
+        res.status(500).json({ message: err.message });
+    }
+});
 
 router.get("/:userId", async (req, res) => {
     const { userId } = req.params;
@@ -46,6 +57,16 @@ router.get("/:userId", async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 });
+
+router.get("/id/:id", async(req, res) => {
+    const { id } = req.params;
+    try {
+        const vb = await getVirtualBoxById(id);
+        res.status(200).json({virtualBox: vb});
+    } catch (err: any) {
+        res.status(500).json({ message: err.message });
+    }
+})
 
 router.post("/", async (req, res) => {
 
@@ -123,6 +144,7 @@ router.delete("/all", async (req, res) => {
             return;
         }
         await deleteAllVirtualBoxesByUser(userId);
+        console.log("yess2")
         res.status(200).json({ message: "Deleted all VirtualBoxes successfully!" });
     } catch (error: any) {
         res.status(500).json({ message: error.message });
@@ -332,6 +354,15 @@ router.delete("/share", async (req, res) => {
 
 
 
+
+
+
+
+
+
+
+
+
 router.post("/generate", async (req, res) => {
     const schema = z.object({ userId: z.string() });
 
@@ -347,14 +378,13 @@ router.post("/generate", async (req, res) => {
 
 
 
-// router.get("/delete/utv", async (req, res) => {
-//     try {
-//         const allData = await deleteUTVData()
-//         console.log("All data in usersToVirtualboxes:", allData);
-//         res.status(200).json(allData);
-//     } catch (err: any) {
-//         res.status(500).json({ message: err.message });
-//     }
-// })
+router.get("/delete/utv", async (req, res) => {
+    try {
+        const allData = await deleteUTVData()
+        res.status(200).json(allData);
+    } catch (err: any) {
+        res.status(500).json({ message: err.message });
+    }
+})
 
 export default router;

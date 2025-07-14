@@ -8,17 +8,20 @@ import { createServer } from "http";
 import express from "express";
 import { Server } from "socket.io";
 import cors from "cors";
+import tar from "tar-fs";
+
 
 import userRouter from "./router/user-router";
 import virtualBoxRouter from "./router/virtualBox-router";
 
 import { getUserWithId } from "./services/user-service";
 import { z } from "zod";
-import { createNewFileOrFolder, deleteFileOrFolder, getFileContentByFullPath, getFolderSizeInMB, getFolderTreeInVirtualBox, renameItem, updateFileContent } from "./storage/service";
+import { createNewFileOrFolder, createProjectZip, deleteFileOrFolder, getFileContentByFullPath, getFolderSizeInMB, getFolderTreeInVirtualBox, getSignedUrl, renameItem, updateFileContent, uploadProjectZip } from "./storage/service";
 import { IDisposable, IPty, spawn } from "node-pty"
 import { generateCode } from "./services/ai-service";
-import { createFileRL, createFolderRL, deleteFileRL, deleteFolderRL, MAX_BODY_SIZE, renameFileRL, saveFileRL } from "./rate-limit";
-
+import Docker from "dockerode"
+import { getVirtualBoxById } from "./services/virtualBox-service";
+import { ConsoleLogWriter } from "drizzle-orm";
 
 
 const app = express();
@@ -34,6 +37,12 @@ app.use("/api/virtualbox", virtualBoxRouter);
 
 
 
+const docker = new Docker({
+    socketPath: '//./pipe/docker_engine'  // Windows named pipe path
+});
+const dockerfileFolder = path.resolve(__dirname, "..", "dockerfiles");
+
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
     cors: {
@@ -41,7 +50,6 @@ const io = new Server(httpServer, {
     }
 })
 
-let inactivityTimeout: NodeJS.Timeout | null = null;
 let isOwnerConnected = false;
 
 const terminals: {
@@ -56,7 +64,6 @@ const terminals: {
 const handShakeSchmea = z.object({
     userId: z.string(),
     virtualBoxId: z.string(),
-    type: z.enum(["node", "react"]),
     EIO: z.string(),
     transport: z.string(),
 })
@@ -70,44 +77,46 @@ io.use(async (socket, next) => {
         return;
     }
 
-    const { userId, virtualBoxId, type } = parseResult.data
+    const { userId, virtualBoxId} = parseResult.data
 
-    const dbUser = await getUserWithId(q.userId as string)
+    const dbUser = await getUserWithId(userId)
 
-    const includesVirtualBox = dbUser?.virtualBox.some((box) => box.id === q.virtualBoxId);
-    if (!dbUser || !includesVirtualBox) {
-        next(new Error("Invalid Credentials"))
+    if (!dbUser) {
+        next(new Error("Invalid UserId"))
         return;
     }
 
-    const virtualbox = dbUser.virtualBox.find(
-        (v: any) => v.id === virtualBoxId
-    );
+     const virtualbox = await getVirtualBoxById(virtualBoxId)
 
-    const sharedVirtualboxes = dbUser.usersToVirtualboxes.find(
+    if (!virtualbox) {
+        next(new Error("Invalid virtualBoxId"))
+        return;
+    }
+    
+    const isOwner = dbUser?.virtualBox.some((box) => box.id === virtualBoxId);
+
+    
+    const isSharedUser = dbUser.usersToVirtualboxes.some(
         (utv: any) => utv.virtualboxId === virtualBoxId
     );
 
-    if (!virtualbox && !sharedVirtualboxes) {
-        next(new Error("Invalid credentials"));
+    if (!isOwner && !isSharedUser) {
+        next(new Error("Neither Owner or Shared User"));
         return;
     }
 
     socket.data = {
         id: virtualBoxId,
         userId,
-        isOwner: virtualbox !== undefined,
+        isOwner: isOwner,
     }
+
     next();
 })
 
 
 
 io.on("connection", async (socket) => {
-
-
-    if (inactivityTimeout) clearTimeout(inactivityTimeout);
-
 
     const data = socket.data as {
         userId: string
@@ -117,17 +126,17 @@ io.on("connection", async (socket) => {
 
     if (data.isOwner) {
         isOwnerConnected = true;
-    } else if (!isOwnerConnected) {
-        console.log("the virtual box owner not connected");
+    }
+    
+    if (!isOwnerConnected) {
         socket.emit("disableAccess", "The virtualbox owner is not connected.");
         return;
     }
-
-
-    const folderTree = await getFolderTreeInVirtualBox(data.userId, data.id);
-
-    socket.emit("loaded", folderTree.children);
-
+    
+    socket.on("get-file-tree", async (userId: string, virtualBoxId: string) => {
+        const folderTree = await getFolderTreeInVirtualBox(userId, virtualBoxId);
+        socket.emit("loaded", folderTree.children)
+    });
 
     socket.on("getFile", async (fullPath: string, callback) => {
         const content = await getFileContentByFullPath(fullPath);
@@ -135,70 +144,35 @@ io.on("connection", async (socket) => {
     })
 
     socket.on("rename", async (filePath: string, newName: string, callback) => {
-        try {
-            await renameFileRL.consume(data.userId, 1);
-            const { success, pathMap } = await renameItem(filePath, newName);
-            const folderTree = await getFolderTreeInVirtualBox(data.userId, data.id);
-            callback(success, null, pathMap, folderTree.children);
+        const { success, pathMap } = await renameItem(filePath, newName);
+        const folderTree = await getFolderTreeInVirtualBox(data.userId, data.id);
+        callback(success, null, pathMap, folderTree.children);
 
-        } catch (error) {
-            io.emit("rate-limit", "You are sending too many requests. Please try again later.");
-
-        }
     })
 
     socket.on("save-file", async (fullPath: string, content: string, callback) => {
-        try {
-            if (Buffer.byteLength(content, "utf-8") > MAX_BODY_SIZE) {
-                socket.emit(
-                    "rateLimit",
-                    "Rate limited: file size too large. Please reduce the file size."
-                );
-                return;
-            }
-            await saveFileRL.consume(data.userId, 1)
-            const success = await updateFileContent(fullPath, content);
-            callback(success);
-        } catch (error) {
-            io.emit("rate-limit", "You are sending too many requests. Please try again later.");
-        }
+        const success = await updateFileContent(fullPath, content);
+        callback(success);
     })
 
 
     socket.on("create-new-request", async (name: string, type: "file" | "folder", selectedFolder: string, callback) => {
         try {
-            const sizeInMB = await getFolderSizeInMB(data.userId, data.id);
-            if (sizeInMB > 200) {
-                io.emit("rate-limit", "Project size exceeded");
-                callback(false, "Project Size exceeded", []);
-            }
-            if (type === "file") {
-                await createFileRL.consume(data.userId, 1);
-            } else {
-                await createFolderRL.consume(data.userId, 1);
-            }
+
             await createNewFileOrFolder(name, type, selectedFolder);
             const folderTree = await getFolderTreeInVirtualBox(data.userId, data.id);
             callback(true, null, folderTree.children);
         } catch (error: any) {
-            io.emit("rate-limit", "You are sending too many requests. Please try again later.");
             callback(false, error.message, []);
         }
     })
 
     socket.on("delete-request", async (path, callback) => {
         try {
-            const isFile = path.spllit("/").pop()?.includes(".");
-            if (isFile) {
-                await deleteFileRL.consume
-            } else {
-                await deleteFolderRL.consume(data.userId, 1);
-            }
             await deleteFileOrFolder(path);
             const folderTree = await getFolderTreeInVirtualBox(data.userId, data.id);
             callback(true, null, folderTree.children);
         } catch (error: any) {
-            io.emit("rate-limit", "You are sending too many requests. Please try again later.");
             callback(false, error.message, []);
         }
 
@@ -206,7 +180,7 @@ io.on("connection", async (socket) => {
 
 
 
-    socket.on("resizeTerminal", (dimensions: { cols: number; rows: number }) => {
+    socket.on("terminal-resize", (dimensions: { cols: number; rows: number }) => {
         Object.values(terminals).forEach((t) => {
             t.terminal.resize(dimensions.cols, dimensions.rows);
         });
@@ -214,71 +188,177 @@ io.on("connection", async (socket) => {
 
 
 
-    socket.on("create-terminal", (id: string, callback) => {
+    // socket.on("create-terminal", (id: string, callback) => {
 
-        if (terminals[id]) {
-            return;
+    //     if (terminals[id]) {
+    //         return;
+    //     }
+
+    //     if (Object.keys(terminals).length >= 4) {
+    //         socket.emit("terminal-error", "You can only have 4 terminals open at a time.");
+    //         return;
+    //     }
+
+    //     const projectPath = path.join(__dirname, "..", "..", "projects", data.id);
+    //     if (!fs.existsSync(projectPath)) {
+    //         fs.mkdirSync(projectPath, { recursive: true });
+    //     }
+
+    //     const files = fs.readdirSync(projectPath);
+    //     if (files.length === 0) {
+    //         fs.writeFileSync(path.join(projectPath, ".placeholder"), "");
+    //     }
+
+    // const pty = spawn(os.platform() === "win32" ? "cmd.exe" : "bash", [], {
+    //     name: "xterm",
+    //     cols: 100,
+    //     cwd: projectPath
+    // })
+
+    // const onData = pty.onData((data) => {
+    //     io.emit("terminal-response", {
+    //         id,
+    //         data
+    //     })
+    // })
+
+    // const onExit = pty.onExit((code) => console.log("exit", code))
+    // pty.write("clear\n");
+    // terminals[id] = {
+    //     terminal: pty,
+    //     onData,
+    //     onExit
+    // };
+
+    //     callback()
+    // })
+
+
+    async function handleZipAndUpload(userId: string, vbId: string) {
+        const zip = await createProjectZip(userId, vbId);
+        const url = await uploadProjectZip(userId, vbId, zip);
+    }
+
+    async function buildDockerImageWithArgs(virtualBoxId: string, downloadURL: string) {
+        const imageTag = `ccce-react-${virtualBoxId}:latest`;
+
+        if (!fs.existsSync(dockerfileFolder)) {
+            throw new Error(`❌ Dockerfile folder does not exist: ${dockerfileFolder}`);
         }
 
-        if (Object.keys(terminals).length >= 4) {
-            socket.emit("terminal-error", "You can only have 4 terminals open at a time.");
-            return;
-        }
+        const tarStream = tar.pack(dockerfileFolder);
 
-        const projectPath = path.join(__dirname, "..", "..", "projects", data.id);
-        if (!fs.existsSync(projectPath)) {
-            fs.mkdirSync(projectPath, { recursive: true });
-        }
+        const stream = await docker.buildImage(tarStream, {
+            t: imageTag,
+            buildargs: {
+                DOWNLOAD_URL: downloadURL,
+            },
+        });
 
-        const files = fs.readdirSync(projectPath);
-        if (files.length === 0) {
-            fs.writeFileSync(path.join(projectPath, ".placeholder"), "");
-        }
 
-        const pty = spawn(os.platform() === "win32" ? "cmd.exe" : "bash", [], {
-            name: "xterm",
-            cols: 100,
-            cwd: path.join()
-        })
-
-        const onData = pty.onData((data) => {
-            io.emit("terminal-response", {
-                id,
-                data
-            })
-        })
-
-        const onExit = pty.onExit((code) => console.log("exit", code))
-        pty.write("clear\n");
-        terminals[id] = {
-            terminal: pty,
-            onData,
-            onExit
-        };
-
-        callback()
-    })
-
-    socket.on("closeTerminal", (id: string, callback) => {
-        if (!terminals[id]) {
-            console.log(
-                "tried to close, but term does not exists. terminals",
-                terminals
+        await new Promise((resolve, reject) => {
+            docker.modem.followProgress(
+                stream,
+                (err, res) => {
+                    if (err) {
+                        return reject(err);
+                    }
+                    resolve(res);
+                },
             );
-            return;
+        });
+
+        console.log(`🚀 Image successfully built and tagged as: ${imageTag}`);
+    }
+
+
+    // project delete remove image and container
+
+
+    socket.on("create-terminal", async (id: string, userId: string, virtualBoxId: string, callback) => {
+        try {
+
+            if (Object.keys(terminals).length >= 1) {
+                socket.emit("terminal-error", "You can only have 1 terminal open at a time.");
+                return;
+            }
+
+            let hostPort;
+
+            await handleZipAndUpload(userId, virtualBoxId);
+            const downloadURL = await getSignedUrl(userId, virtualBoxId);
+
+            const imageTag = `ccce-react-${virtualBoxId}:latest`;
+
+            try {
+                await docker.getImage(imageTag).inspect();
+            } catch (err) {
+                await buildDockerImageWithArgs(virtualBoxId, downloadURL);
+            }
+
+            const containerName = `react-${virtualBoxId}`;
+            let container;
+            try {
+                container = docker.getContainer(containerName);
+                const data = await container.inspect();
+
+                if (data.State.Status !== 'running') {
+                    await container.start();
+                }
+                hostPort = data.HostConfig.PortBindings["5000/tcp"][0].HostPort;
+            } catch (err) {
+
+                const lastTwo = id.slice(-2).replace(/\D/g, "");
+                hostPort = `31${lastTwo}`;
+
+                container = await docker.createContainer({
+                    Image: imageTag,
+                    name: containerName,
+                    Tty: true,
+                    WorkingDir: "/app",
+                    HostConfig: {
+                        PortBindings: { "5000/tcp": [{ HostPort: hostPort }] },
+                    },
+                    ExposedPorts: { "5000/tcp": {} },
+                });
+
+                await container.start();
+            }
+
+            const pty = spawn("docker", [
+                "exec", "-it", "-w", "/app", `react-${virtualBoxId}`, "bash"
+            ], {
+                name: "xterm-color",
+                cols: 100,
+                rows: 30,
+            });
+
+            const onData = pty.onData((data) => {
+                socket.emit("terminal-response", {
+                    id,
+                    data
+                });
+            });
+
+            const onExit = pty.onExit(() => { });
+
+            terminals[id] = {
+                terminal: pty,
+                onData,
+                onExit,
+            };
+        
+            socket.emit("preview-url", `http://localhost:${hostPort}`);
+            callback();
+        } catch (err) {
+            console.error("Failed to create terminal:", err);
+            callback(err);
         }
-
-        terminals[id].onData.dispose();
-        terminals[id].onExit.dispose();
-
-        delete terminals[id];
-
-        callback(true);
     });
 
 
+
     socket.on("terminal-data", (id: string, data: string) => {
-        console.log("terminal", data)
         if (!terminals[id]) return
 
         try {
@@ -289,20 +369,66 @@ io.on("connection", async (socket) => {
 
     })
 
+    socket.on("close-terminal", async (id: string, virtualBoxId: string, callback) => {
+        if (!terminals[id]) {
+            console.log(
+                "Tried to close, but terminal does not exist. Current terminals:",
+                Object.keys(terminals)
+            );
+            callback(false);
+            return;
+        }
+
+        try {
+            terminals[id].onData.dispose();
+            terminals[id].onExit.dispose();
+
+            delete terminals[id];
+
+            const container = docker.getContainer(`react-${virtualBoxId}`);
+            if (container) {
+                await container.stop();
+            } else {
+                console.log(`No container found with name react-${virtualBoxId}`);
+            }
+
+            callback(true);
+        } catch (error) {
+            console.error(`Error closing terminal ${id}:`, error);
+            callback(false);
+        }
+    });
+
+
+    // socket.on("close-terminal", (id: string, callback) => {
+    //     if (!terminals[id]) {
+    //         console.log(
+    //             "tried to close, but term does not exists. terminals",
+    //             terminals
+    //         );
+    //         return;
+    //     }
+
+    //     terminals[id].onData.dispose();
+    //     terminals[id].onExit.dispose();
+
+    //     delete terminals[id];
+
+    //     callback(true);
+    // });
+
 
 
 
 
     socket.on("generate-code", async (fileName: string, code: string, line: number, instructions: string, callback) => {
         try {
-            console.log("Reach")
-            const res = await generateCode(fileName, code, instructions, line, (chunk) => {
+            await generateCode(fileName, code, instructions, line, (chunk) => {
                 socket.emit("generate-code-chunk", chunk);
             });
             socket.emit("generate-code-done");
         } catch (error: any) {
             socket.emit("generate-code-error", error.message);
-            // callback(false, error.message, "");
         }
     })
 
@@ -311,44 +437,26 @@ io.on("connection", async (socket) => {
 
     socket.on("disconnect", async () => {
         if (data.isOwner) {
-            Object.entries(terminals).forEach((t) => {
+            Object.entries(terminals).forEach(async (t) => {
                 const { terminal, onData, onExit } = t[1];
+                const container = docker.getContainer(`react-${data.id}`);
+                if (container) {
+                    await container.stop();
+                }
                 if (os.platform() !== "win32") terminal.kill();
                 onData.dispose();
                 onExit.dispose();
                 delete terminals[t[0]];
             });
 
-            console.log("The owner disconnected");
-            socket.broadcast.emit("ownerDisconnected");
-        } else {
-            console.log("A shared user disconnected.");
+            isOwnerConnected = false;
+
             socket.broadcast.emit(
                 "disableAccess",
                 "The virtualbox owner has disconnected."
             );
         }
-        // Object.entries(terminals).forEach((t) => {
-        //     const { terminal, onData, onExit } = t[1];
-        //     if (os.platform() !== "win32") terminal.kill
-        //     onData.dispose();
-        //     onExit.dispose();
-        //     delete terminals[t[0]]
-        // })
 
-        const sockets = await io.fetchSockets();
-        if (inactivityTimeout) {
-            clearTimeout(inactivityTimeout);
-        }
-        if (sockets.length === 0) {
-            inactivityTimeout = setTimeout(() => {
-                io.fetchSockets().then((sockets) => {
-                    if (sockets.length === 0) {
-                        console.log("No users have been connected for 15 seconds");
-                    }
-                });
-            }, 15000);
-        }
     })
 
 })
