@@ -76,17 +76,6 @@ export const updateVirtualBox = async (data: {
         .get();
 };
 
-export const getVirtualBoxesSharedToMe = async (userId: string) => {
-    const sharedBoxes = await db.query.usersToVirtualboxes.findMany({
-        where: (utv, { eq }) => eq(utv.sharedTo, userId),
-        with: {
-            virtualBox: true,
-            sharedByUser: true,
-        },
-    });
-
-    return sharedBoxes;
-}
 
 export const getUsersSharedByMe = async (userId: string) => {
     const shares = await db.query.usersToVirtualboxes.findMany({

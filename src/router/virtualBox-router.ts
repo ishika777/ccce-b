@@ -14,7 +14,6 @@ import {
     deleteAllVirtualBoxesByUser,
     getVirtualBoxByName,
     deleteUTVData,
-    getVirtualBoxesSharedToMe,
     getUsersSharedByMe,
     deleteAllVirtualBoxes,
 } from "../services/virtualBox-service";
@@ -236,21 +235,6 @@ router.get("/shared/users/:userId", async (req, res) => {
     }
 });
 
-router.get("/shared-to-me/:userId", async (req, res) => {
-    const { userId } = req.params;
-    try {
-        const user = await getUserWithId(userId);
-        if (!user) {
-            res.status(404).json({ message: "Invalid Credentials(userId)" })
-            return;
-        }
-
-        const data = await getVirtualBoxesSharedToMe(userId);
-        res.status(200).json({ data });
-    } catch (err: any) {
-        res.status(500).json({ message: err.message });
-    }
-});
 
 router.post("/share", async (req, res) => {
     const schema = z.object({
