@@ -143,7 +143,6 @@ router.delete("/all", async (req, res) => {
             return;
         }
         await deleteAllVirtualBoxesByUser(userId);
-        console.log("yess2")
         res.status(200).json({ message: "Deleted all VirtualBoxes successfully!" });
     } catch (error: any) {
         res.status(500).json({ message: error.message });

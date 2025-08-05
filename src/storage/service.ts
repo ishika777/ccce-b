@@ -41,7 +41,17 @@ export async function createProjectZip(userId: string, virtualBoxId: string): Pr
     const baseFolder = `${userId}/${virtualBoxId}`;
     const zip = new JSZip();
 
-    const files = await listAllFiles(baseFolder);
+    let files
+    try {
+        files = await listAllFiles(baseFolder);
+    } catch (error: unknown) {
+        if (error instanceof Error) {
+        throw new Error(error.message);
+    } else {
+        throw new Error("An unknown error occurred");
+    }
+    }
+
 
     // Download each file and add to zip
     await Promise.all(
@@ -225,7 +235,13 @@ export async function getFolderTreeInVirtualBox(userId: string, virtualBoxId: st
     const rootPrefix = `${userId}/${virtualBoxId}`;
     const rootFolderName = virtualBoxId;
 
-    return await buildFolderTree(rootPrefix, rootFolderName);
+
+    try {
+        const tree: TFolder = await buildFolderTree(rootPrefix, rootFolderName);
+        return tree;
+    } catch (error) {
+        throw error
+    }
 }
 
 export async function renameItem(fullPath: string, newName: string): Promise<{ success: boolean, pathMap: Record<string, string> }> {

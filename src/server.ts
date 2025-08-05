@@ -77,7 +77,7 @@ io.use(async (socket, next) => {
         return;
     }
 
-    const { userId, virtualBoxId} = parseResult.data
+    const { userId, virtualBoxId } = parseResult.data
 
     const dbUser = await getUserWithId(userId)
 
@@ -86,16 +86,16 @@ io.use(async (socket, next) => {
         return;
     }
 
-     const virtualbox = await getVirtualBoxById(virtualBoxId)
+    const virtualbox = await getVirtualBoxById(virtualBoxId)
 
     if (!virtualbox) {
         next(new Error("Invalid virtualBoxId"))
         return;
     }
-    
+
     const isOwner = dbUser?.virtualBox.some((box) => box.id === virtualBoxId);
 
-    
+
     const isSharedUser = dbUser.usersToVirtualboxes.some(
         (utv: any) => utv.virtualboxId === virtualBoxId
     );
@@ -127,15 +127,20 @@ io.on("connection", async (socket) => {
     if (data.isOwner) {
         isOwnerConnected = true;
     }
-    
+
     if (!isOwnerConnected) {
         socket.emit("disableAccess", "The virtualbox owner is not connected.");
         return;
     }
-    
-    socket.on("get-file-tree", async (userId: string, virtualBoxId: string) => {
-        const folderTree = await getFolderTreeInVirtualBox(userId, virtualBoxId);
-        socket.emit("loaded", folderTree.children)
+
+    socket.on("get-file-tree", async (userId: string, virtualBoxId: string, callback) => {
+        try {
+            const folderTree = await getFolderTreeInVirtualBox(userId, virtualBoxId);
+            socket.emit("loaded", folderTree.children)
+            callback("")
+        } catch (error) {
+            callback(error)
+        }
     });
 
     socket.on("getFile", async (fullPath: string, callback) => {
@@ -235,8 +240,13 @@ io.on("connection", async (socket) => {
 
 
     async function handleZipAndUpload(userId: string, vbId: string) {
-        const zip = await createProjectZip(userId, vbId);
-        const url = await uploadProjectZip(userId, vbId, zip);
+        let zip;
+        try {
+            zip = await createProjectZip(userId, vbId);
+            const url = await uploadProjectZip(userId, vbId, zip);
+        } catch (error) {
+            throw error;
+        }
     }
 
     async function buildDockerImageWithArgs(virtualBoxId: string, downloadURL: string) {
@@ -284,8 +294,12 @@ io.on("connection", async (socket) => {
             }
 
             let hostPort;
+            try {
+                await handleZipAndUpload(userId, virtualBoxId);
+            } catch (error) {
+                throw error
+            }
 
-            await handleZipAndUpload(userId, virtualBoxId);
             const downloadURL = await getSignedUrl(userId, virtualBoxId);
 
             const imageTag = `ccce-react-${virtualBoxId}:latest`;
@@ -347,11 +361,10 @@ io.on("connection", async (socket) => {
                 onData,
                 onExit,
             };
-        
+
             socket.emit("preview-url", `http://localhost:${hostPort}`);
             callback();
         } catch (err) {
-            console.error("Failed to create terminal:", err);
             callback(err);
         }
     });
