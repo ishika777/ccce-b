@@ -4,23 +4,28 @@ import JSZip from "jszip";
 
 const listAllFiles = async (path: string, collectedPaths: string[] = []) => {
     const { data, error } = await supabase.storage.from('file-storage').list(path, { limit: 1000 });
+    // console.log("Listing files in:", data);
 
     if (error) throw new Error(`Failed to list files in ${path}: ${error.message}`);
 
     for (const item of data) {
         const fullPath = `${path}/${item.name}`;
-        if (item.metadata && item.metadata.size === 0 && item.name.includes(".")) {
-            collectedPaths.push(fullPath);
-        } else if (item.name.includes(".")) {
+
+        // console.log("Item found:", item);
+        // console.log("Full path:", fullPath);
+
+        if (item.metadata) {
             collectedPaths.push(fullPath);
         } else {
-            // It's a subfolder — recursively list its contents
             await listAllFiles(fullPath, collectedPaths);
         }
     }
 
     return collectedPaths;
 };
+
+
+
 
 export async function getSignedUrl(userId: string, virtualBoxId: string, fileName = 'project.zip') {
     const filePath = `${userId}/${virtualBoxId}/${fileName}`;
@@ -36,7 +41,6 @@ export async function getSignedUrl(userId: string, virtualBoxId: string, fileNam
     return data.signedUrl;
 }
 
-
 export async function createProjectZip(userId: string, virtualBoxId: string): Promise<Buffer> {
     const baseFolder = `${userId}/${virtualBoxId}`;
     const zip = new JSZip();
@@ -46,10 +50,10 @@ export async function createProjectZip(userId: string, virtualBoxId: string): Pr
         files = await listAllFiles(baseFolder);
     } catch (error: unknown) {
         if (error instanceof Error) {
-        throw new Error(error.message);
-    } else {
-        throw new Error("An unknown error occurred");
-    }
+            throw new Error(error.message);
+        } else {
+            throw new Error("An unknown error occurred");
+        }
     }
 
 
@@ -135,9 +139,6 @@ export async function uploadStarterFiles(userId: string, virtualBoxId: string, f
     }
 }
 
-
-
-
 export async function deleteVirtualBox(userId: string, virtualBoxId: string): Promise<void> {
 
     const folderPath = `${userId}/${virtualBoxId}`;
@@ -191,8 +192,8 @@ export async function getFileContentByFullPath(fullPath: string): Promise<string
     return text;
 }
 
-
 export async function buildFolderTree(prefix: string, name: string): Promise<TFolder> {
+
     const folderId = crypto.randomUUID();
 
     const folder: TFolder = {
@@ -207,13 +208,13 @@ export async function buildFolderTree(prefix: string, name: string): Promise<TFo
         .from("file-storage")
         .list(prefix);
 
+
     if (error) {
         throw new Error(`Failed to list folder ${prefix}: ${error.message}`);
     }
 
     for (const item of data) {
         const fullPath = prefix ? `${prefix}/${item.name}` : item.name;
-
         if (item.metadata) {
             const fileId = crypto.randomUUID();
             folder.children.push({
@@ -228,6 +229,7 @@ export async function buildFolderTree(prefix: string, name: string): Promise<TFo
         }
     }
 
+
     return folder;
 }
 
@@ -238,13 +240,15 @@ export async function getFolderTreeInVirtualBox(userId: string, virtualBoxId: st
 
     try {
         const tree: TFolder = await buildFolderTree(rootPrefix, rootFolderName);
+        console.log(tree.children)
         return tree;
     } catch (error) {
         throw error
     }
 }
 
-export async function renameItem(fullPath: string, newName: string): Promise<{ success: boolean, pathMap: Record<string, string> }> {
+export async function renameItem(fullPath: string, newName: string): Promise<{ success: boolean }> {
+
     const parts = fullPath.split("/");
     const oldName = parts.pop();
     const basePath = parts.join("/");
@@ -253,79 +257,52 @@ export async function renameItem(fullPath: string, newName: string): Promise<{ s
     const isFile = oldName?.includes(".");
     const storage = supabase.storage.from("file-storage");
 
-    const pathMap: Record<string, string> = {};
 
     try {
         if (isFile) {
             const { data, error: downloadError } = await storage.download(fullPath);
-            if (downloadError || !data) return { success: false, pathMap };
+            
+            if (downloadError || !data) return { success: false };
 
             const uploadRes = await storage.upload(newFullPath, data, { upsert: true });
-            if (uploadRes.error) return { success: false, pathMap };
+            if (uploadRes.error) return { success: false };
 
             const deleteRes = await storage.remove([fullPath]);
-            if (deleteRes.error) return { success: false, pathMap };
+            if (deleteRes.error) return { success: false };
 
-            pathMap[fullPath] = newFullPath;
-            return { success: true, pathMap };
+            return { success: true };
         } else {
-            // FOLDER: Get all nested files recursively
-            const collectAllFiles = async (prefix: string): Promise<string[]> => {
-                const { data: items, error } = await storage.list(prefix, { limit: 10000 });
-                if (error || !items) return [];
+            const allFiles = await listAllFiles(fullPath);
 
-                const results: string[] = [];
+            for (const file of allFiles) {
+                const fileName = file.slice(fullPath.length + 1);
+                const newFilePath = `${newFullPath}/${fileName}`;
 
-                for (const item of items) {
-                    const itemPath = `${prefix}/${item.name}`;
-                    if (item.metadata) {
-                        results.push(itemPath);
-                    } else {
-                        const subResults = await collectAllFiles(itemPath);
-                        results.push(...subResults);
-                    }
-                }
-
-                return results;
-            };
-
-            const allFiles = await collectAllFiles(fullPath);
-
-            // Move each file
-            for (const oldFilePath of allFiles) {
-                const relative = oldFilePath.slice(fullPath.length + 1); // skip prefix + "/"
-                const newFilePath = `${newFullPath}/${relative}`;
-
-                const { data, error: downloadError } = await storage.download(oldFilePath);
-                if (downloadError || !data) return { success: false, pathMap };
+                const { data, error: downloadError } = await storage.download(file);
+                if (downloadError || !data) return { success: false };
 
                 const uploadRes = await storage.upload(newFilePath, data, { upsert: true });
-                if (uploadRes.error) return { success: false, pathMap };
+                if (uploadRes.error) return { success: false };
 
-                const deleteRes = await storage.remove([oldFilePath]);
-                if (deleteRes.error) return { success: false, pathMap };
+                const deleteRes = await storage.remove([file]);
+                if (deleteRes.error) return { success: false };
 
-                pathMap[oldFilePath] = newFilePath;
             }
 
-            // Optionally: remove empty folders — Supabase doesn't support folder deletion directly
-            pathMap[fullPath] = newFullPath;
-
-            return { success: true, pathMap };
+            return { success: true };
         }
 
     } catch (err) {
         console.error("Rename failed:", err);
-        return { success: false, pathMap };
+        return { success: false };
     }
 }
 
 export async function updateFileContent(fullPath: string, content: string): Promise<boolean> {
-    const storage = supabase.storage.from("file-storage");
 
     const blob = new Blob([content], { type: "text/plain" });
 
-    const { error } = await storage.upload(fullPath, blob, {
+    const { error } = await supabase.storage.from("file-storage").upload(fullPath, blob, {
         upsert: true,
     });
 
@@ -375,27 +352,15 @@ export async function deleteFileOrFolder(path: string): Promise<void> {
         }
 
     } else {
-        const folderPath = path.endsWith("/") ? path : `${path}/`;
-
-        const { data, error } = await supabase.storage
+        const { error } = await supabase.storage
             .from("file-storage")
-            .list(folderPath, { limit: 10000 });
+            .list(path, { limit: 10000 });
 
         if (error) {
-            throw new Error(`Failed to list folder ${folderPath}: ${error.message}`);
+            throw new Error(`Failed to list folder ${path}: ${error.message}`);
         }
 
-        const filesToDelete: string[] = [];
-        for (const item of data) {
-            const fullPath = `${folderPath}${item.name}`;
-
-            if (item.metadata) {
-                filesToDelete.push(fullPath);
-            } else {
-                await deleteFileOrFolder(fullPath);
-            }
-        }
-        filesToDelete.push(`${folderPath}.placeholder`);
+        const filesToDelete = await listAllFiles(path);
 
         if (filesToDelete.length > 0) {
             const { error } = await supabase.storage
@@ -403,45 +368,8 @@ export async function deleteFileOrFolder(path: string): Promise<void> {
                 .remove(filesToDelete);
 
             if (error) {
-                throw new Error(`Failed to delete contents of ${folderPath}: ${error.message}`);
+                throw new Error(`Failed to delete contents of ${path}: ${error.message}`);
             }
         }
     }
-}
-
-
-export async function getFolderSizeInMB(userId: string, virtualBoxId: string): Promise<number> {
-    const prefix = `${userId}/${virtualBoxId}`;
-
-    async function walk(path: string): Promise<number> {
-        let total = 0;
-        let offset = 0;
-        const limit = 1000;
-
-        while (true) {
-            const { data, error } = await supabase.storage
-                .from('file-storage')
-                .list(path, { limit, offset });
-
-            if (error) throw new Error(`Failed to list "${path}": ${error.message}`);
-            if (!data || data.length === 0) break;
-
-            for (const item of data) {
-                if (item.metadata?.size !== undefined) {
-                    total += item.metadata.size;
-                } else {
-                    total += await walk(`${path}/${item.name}`);
-                }
-            }
-
-            if (data.length < limit) break;
-            offset += limit;
-        }
-
-        return total;
-    }
-
-    const totalBytes = await walk(prefix);
-    const sizeInMB = totalBytes / (1024 * 1024);
-    return parseFloat(sizeInMB.toFixed(2)); // Return MB as number, rounded to 2 decimals
 }

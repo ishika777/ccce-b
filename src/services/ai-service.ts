@@ -3,9 +3,9 @@ import { GoogleGenAI } from "@google/genai";
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export const generateCode = async (
-    fileName: string, 
-    fileContent: string, 
-    instructions: string, 
+    fileName: string,
+    fileContent: string,
+    instructions: string,
     line: number,
     onChunk: (chunk: string) => void
 ) => {
@@ -36,10 +36,7 @@ export const generateCode = async (
     });
 
     for await (const chunk of stream) {
-    onChunk(chunk.text || "");
-  }
-    // for await (const chunk of response) {
-    //     return chunk.text;
-    // }
-    // return response.text;
+        onChunk(chunk.text || "");
+    }
+
 };

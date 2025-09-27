@@ -9,7 +9,7 @@ import {
     createVirtualBox,
     shareVirtualBox,
     removeSharedVirtualBox,
-    incrementGenerations,
+    // incrementGenerations,
     getAllVirtualBoxByUser,
     deleteAllVirtualBoxesByUser,
     getVirtualBoxByName,
@@ -351,7 +351,7 @@ router.post("/generate", async (req, res) => {
 
     try {
         const { userId } = schema.parse(req.body);
-        await incrementGenerations(userId);
+        // await incrementGenerations(userId);
         res.sendStatus(200); // OK
     } catch (err: any) {
         res.status(400).json({ message: err.message });

@@ -2,26 +2,27 @@ import dotenv from "dotenv"
 import path from "path"
 import fs from "fs"
 import os from "os";
+
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 const port = process.env.PORT || 8080;
+
 import { createServer } from "http";
 import express from "express";
 import { Server } from "socket.io";
 import cors from "cors";
 import tar from "tar-fs";
 
-
 import userRouter from "./router/user-router";
 import virtualBoxRouter from "./router/virtualBox-router";
 
 import { getUserWithId } from "./services/user-service";
 import { z } from "zod";
-import { createNewFileOrFolder, createProjectZip, deleteFileOrFolder, getFileContentByFullPath, getFolderSizeInMB, getFolderTreeInVirtualBox, getSignedUrl, renameItem, updateFileContent, uploadProjectZip } from "./storage/service";
+import { createNewFileOrFolder, createProjectZip, deleteFileOrFolder, getFileContentByFullPath, getFolderTreeInVirtualBox, getSignedUrl, renameItem, updateFileContent, uploadProjectZip } from "./storage/service";
 import { IDisposable, IPty, spawn } from "node-pty"
 import { generateCode } from "./services/ai-service";
 import Docker from "dockerode"
 import { getVirtualBoxById } from "./services/virtualBox-service";
-import { ConsoleLogWriter } from "drizzle-orm";
+
 
 
 const app = express();
@@ -40,7 +41,7 @@ app.use("/api/virtualbox", virtualBoxRouter);
 const docker = new Docker({
     socketPath: '//./pipe/docker_engine'  // Windows named pipe path
 });
-const dockerfileFolder = path.resolve(__dirname, "..", "dockerfiles");
+const reactDockerfileFolder = path.resolve(__dirname, "..", "dockerfiles", "react");
 
 
 const httpServer = createServer(app);
@@ -79,7 +80,7 @@ io.use(async (socket, next) => {
 
     const { userId, virtualBoxId } = parseResult.data
 
-    const dbUser = await getUserWithId(userId)
+    const dbUser = await getUserWithId(userId);
 
     if (!dbUser) {
         next(new Error("Invalid UserId"))
@@ -88,17 +89,19 @@ io.use(async (socket, next) => {
 
     const virtualbox = await getVirtualBoxById(virtualBoxId)
 
+
     if (!virtualbox) {
         next(new Error("Invalid virtualBoxId"))
         return;
     }
 
-    const isOwner = dbUser?.virtualBox.some((box) => box.id === virtualBoxId);
+    const isOwner = dbUser?.virtualBox.some((box: any) => box.id === virtualBoxId);
 
 
     const isSharedUser = dbUser.usersToVirtualboxes.some(
         (utv: any) => utv.virtualboxId === virtualBoxId
     );
+
 
     if (!isOwner && !isSharedUser) {
         next(new Error("Neither Owner or Shared User"));
@@ -113,6 +116,51 @@ io.use(async (socket, next) => {
 
     next();
 })
+
+
+ async function handleZipAndUpload(userId: string, vbId: string) {
+        let zip;
+        try {
+            zip = await createProjectZip(userId, vbId);
+            const url = await uploadProjectZip(userId, vbId, zip);
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    async function buildDockerImageWithArgs(virtualBoxId: string, downloadURL: string) {
+        const imageTag = `ccce-react-${virtualBoxId}:latest`;
+
+        if (!fs.existsSync(reactDockerfileFolder)) {
+            throw new Error(`❌ Dockerfile folder does not exist: ${reactDockerfileFolder}`);
+        }
+
+        const tarStream = tar.pack(reactDockerfileFolder);
+
+        const stream = await docker.buildImage(tarStream, {
+            t: imageTag,
+            buildargs: {
+                DOWNLOAD_URL: downloadURL,
+            },
+        });
+
+
+        await new Promise((resolve, reject) => {
+            docker.modem.followProgress(
+                stream,
+                (err: Error | null, res: any) => {
+                    if (err) {
+                        return reject(err);
+                    }
+                    resolve(res);
+                },
+                (event: any) => console.log(event)
+            );
+        });
+
+
+        console.log(`🚀 Image successfully built and tagged as: ${imageTag}`);
+    }
 
 
 
@@ -137,7 +185,6 @@ io.on("connection", async (socket) => {
         try {
             const folderTree = await getFolderTreeInVirtualBox(userId, virtualBoxId);
             socket.emit("loaded", folderTree.children)
-            callback("")
         } catch (error) {
             callback(error)
         }
@@ -149,9 +196,9 @@ io.on("connection", async (socket) => {
     })
 
     socket.on("rename", async (filePath: string, newName: string, callback) => {
-        const { success, pathMap } = await renameItem(filePath, newName);
+        const { success } = await renameItem(filePath, newName);
         const folderTree = await getFolderTreeInVirtualBox(data.userId, data.id);
-        callback(success, null, pathMap, folderTree.children);
+        callback(success, null, folderTree.children);
 
     })
 
@@ -184,6 +231,16 @@ io.on("connection", async (socket) => {
     });
 
 
+    socket.on("generate-code", async (fileName: string, code: string, line: number, instructions: string, callback) => {
+        try {
+            await generateCode(fileName, code, instructions, line, (chunk) => {
+                socket.emit("generate-code-chunk", chunk);
+            });
+            socket.emit("generate-code-done");
+        } catch (error: any) {
+            socket.emit("generate-code-error", error.message);
+        }
+    })
 
     socket.on("terminal-resize", (dimensions: { cols: number; rows: number }) => {
         Object.values(terminals).forEach((t) => {
@@ -193,101 +250,23 @@ io.on("connection", async (socket) => {
 
 
 
-    // socket.on("create-terminal", (id: string, callback) => {
-
-    //     if (terminals[id]) {
-    //         return;
-    //     }
-
-    //     if (Object.keys(terminals).length >= 4) {
-    //         socket.emit("terminal-error", "You can only have 4 terminals open at a time.");
-    //         return;
-    //     }
-
-    //     const projectPath = path.join(__dirname, "..", "..", "projects", data.id);
-    //     if (!fs.existsSync(projectPath)) {
-    //         fs.mkdirSync(projectPath, { recursive: true });
-    //     }
-
-    //     const files = fs.readdirSync(projectPath);
-    //     if (files.length === 0) {
-    //         fs.writeFileSync(path.join(projectPath, ".placeholder"), "");
-    //     }
-
-    // const pty = spawn(os.platform() === "win32" ? "cmd.exe" : "bash", [], {
-    //     name: "xterm",
-    //     cols: 100,
-    //     cwd: projectPath
-    // })
-
-    // const onData = pty.onData((data) => {
-    //     io.emit("terminal-response", {
-    //         id,
-    //         data
-    //     })
-    // })
-
-    // const onExit = pty.onExit((code) => console.log("exit", code))
-    // pty.write("clear\n");
-    // terminals[id] = {
-    //     terminal: pty,
-    //     onData,
-    //     onExit
-    // };
-
-    //     callback()
-    // })
+   
 
 
-    async function handleZipAndUpload(userId: string, vbId: string) {
-        let zip;
-        try {
-            zip = await createProjectZip(userId, vbId);
-            const url = await uploadProjectZip(userId, vbId, zip);
-        } catch (error) {
-            throw error;
-        }
-    }
-
-    async function buildDockerImageWithArgs(virtualBoxId: string, downloadURL: string) {
-        const imageTag = `ccce-react-${virtualBoxId}:latest`;
-
-        if (!fs.existsSync(dockerfileFolder)) {
-            throw new Error(`❌ Dockerfile folder does not exist: ${dockerfileFolder}`);
-        }
-
-        const tarStream = tar.pack(dockerfileFolder);
-
-        const stream = await docker.buildImage(tarStream, {
-            t: imageTag,
-            buildargs: {
-                DOWNLOAD_URL: downloadURL,
-            },
-        });
 
 
-        await new Promise((resolve, reject) => {
-            docker.modem.followProgress(
-                stream,
-                (err, res) => {
-                    if (err) {
-                        return reject(err);
-                    }
-                    resolve(res);
-                },
-            );
-        });
 
-        console.log(`🚀 Image successfully built and tagged as: ${imageTag}`);
-    }
 
 
     // project delete remove image and container
 
 
+
+
+
+
     socket.on("create-terminal", async (id: string, userId: string, virtualBoxId: string, callback) => {
         try {
-
             if (Object.keys(terminals).length >= 1) {
                 socket.emit("terminal-error", "You can only have 1 terminal open at a time.");
                 return;
@@ -320,6 +299,7 @@ io.on("connection", async (socket) => {
                     await container.start();
                 }
                 hostPort = data.HostConfig.PortBindings["5000/tcp"][0].HostPort;
+
             } catch (err) {
 
                 const lastTwo = id.slice(-2).replace(/\D/g, "");
@@ -369,8 +349,6 @@ io.on("connection", async (socket) => {
         }
     });
 
-
-
     socket.on("terminal-data", (id: string, data: string) => {
         if (!terminals[id]) return
 
@@ -411,42 +389,6 @@ io.on("connection", async (socket) => {
             callback(false);
         }
     });
-
-
-    // socket.on("close-terminal", (id: string, callback) => {
-    //     if (!terminals[id]) {
-    //         console.log(
-    //             "tried to close, but term does not exists. terminals",
-    //             terminals
-    //         );
-    //         return;
-    //     }
-
-    //     terminals[id].onData.dispose();
-    //     terminals[id].onExit.dispose();
-
-    //     delete terminals[id];
-
-    //     callback(true);
-    // });
-
-
-
-
-
-    socket.on("generate-code", async (fileName: string, code: string, line: number, instructions: string, callback) => {
-        try {
-            await generateCode(fileName, code, instructions, line, (chunk) => {
-                socket.emit("generate-code-chunk", chunk);
-            });
-            socket.emit("generate-code-done");
-        } catch (error: any) {
-            socket.emit("generate-code-error", error.message);
-        }
-    })
-
-
-
 
     socket.on("disconnect", async () => {
         if (data.isOwner) {

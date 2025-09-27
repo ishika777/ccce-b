@@ -11,12 +11,8 @@ RUN curl -v -L $DOWNLOAD_URL -o project.zip \
     && unzip -o project.zip \
     && rm project.zip
 
-# RUN npm install -g npm@latest
-
 RUN npm install
 
 EXPOSE 5000
 
-CMD ["tail", "-f", "/dev/null"]
-
-# CMD ["npm", "run", "dev"]
+CMD ["npm", "run", "dev"]

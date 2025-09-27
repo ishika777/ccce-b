@@ -1,16 +1,16 @@
 import { z } from "zod";
 import { db } from "../database";
-import { user as userModel } from "../database/schema";
+import { user } from "../database/schema";
 import { eq } from "drizzle-orm";
 
 export const getAllUsers = async () => {
-    const data = await db.select().from(userModel).all();
+    const data = await db.select().from(user).all();
     return data;
 }
 
 export const getUserWithEmail = async (email: string) => {
     const data = await db.query.user.findFirst({
-        where: (user, {eq}) => eq(user.email, email),
+        where: () => eq(user.email, email),
         with: {
             virtualBox: true,
             usersToVirtualboxes: true
@@ -20,15 +20,14 @@ export const getUserWithEmail = async (email: string) => {
 }
 
 export const getUserWithId = async (id: string) => {
-    const data = await db.query.user.findFirst({
-        where: (user, {eq}) => eq(user.id, id),
-        with: {
-            virtualBox: true,
-            usersToVirtualboxes: true
-        }
-    })
-    return data
-}
+  return await db.query.user.findFirst({
+    where: () => eq(user.id, id),
+    with: {
+      virtualBox: true,
+      usersToVirtualboxes: true,
+    },
+  });
+};
 
 type DataType = {
     id: string;
@@ -43,8 +42,8 @@ export const createUser = async (data: DataType) => {
         email: z.string().email()
     })
     const {id, name, email} = userSchema.parse(data);
-    const user = await db.insert(userModel).values({id, name, email}).returning().get();
-    return user;
+    const createdUser = await db.insert(user).values({id, name, email}).returning().get();
+    return createdUser;
 }
 
 export const deleteUserById = async (id: string) => {
@@ -52,13 +51,13 @@ export const deleteUserById = async (id: string) => {
     const userId = idSchema.parse(id);
 
     return await db
-        .delete(userModel)
-        .where(eq(userModel.id, userId))
+        .delete(user)
+        .where(eq(user.id, userId))
         .returning()
         .get();
 
 };
 
 export const deleteAllUsers = async () => {
-    return await db.delete(userModel).returning().get()
+    return await db.delete(user).returning().get()
 };

@@ -1,16 +1,14 @@
 import { db } from "../database";
 import { user, virtualBox, usersToVirtualboxes } from "../database/schema"
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 export const deleteAllVirtualBoxes = async () => {
     return await db.delete(virtualBox).returning().get();
 }
 
-
-
 export const getAllVirtualBoxByUser = async (id: string) => {
     return await db.query.virtualBox.findMany({
-        where: (vb, { eq }) => eq(vb.userId, id),
+        where: () => eq(virtualBox.userId, id),
         with: {
             usersToVirtualboxes: true,
         },
@@ -19,13 +17,13 @@ export const getAllVirtualBoxByUser = async (id: string) => {
 
 export const getVirtualBoxById = async (id: string) => {
     return await db.query.virtualBox.findFirst({
-        where: (vb, { eq }) => eq(vb.id, id),
+        where: () => eq(virtualBox.id, id),
     });
 }
 
 export const getVirtualBoxByName = async (name: string) => {
     return await db.query.virtualBox.findFirst({
-        where: (vb, { eq }) => eq(vb.name, name),
+        where: () => eq(virtualBox.name, name),
     });
 }
 
@@ -79,7 +77,7 @@ export const updateVirtualBox = async (data: {
 
 export const getUsersSharedByMe = async (userId: string) => {
     const shares = await db.query.usersToVirtualboxes.findMany({
-        where: (utv, { eq }) => eq(utv.sharedBy, userId),
+        where: () => eq(usersToVirtualboxes.sharedBy, userId),
         with: {
             sharedToUser: true,
         },
@@ -95,8 +93,7 @@ export const shareVirtualBox = async (virtualboxId: string, sharedById: string, 
     }
 
     const alreadyShared = await db.query.usersToVirtualboxes.findFirst({
-        where: (utv, { and, eq }) =>
-            and(eq(utv.sharedTo, shareToUserId), eq(utv.virtualboxId, virtualboxId)),
+        where: () => and(eq(usersToVirtualboxes.sharedTo, shareToUserId), eq(usersToVirtualboxes.virtualboxId, virtualboxId)),
     });
 
     if (alreadyShared) {
@@ -142,21 +139,21 @@ export const removeSharedVirtualBox = async (
 
 
 
-export const incrementGenerations = async (userId: string) => {
-    const user = await db.query.user.findFirst({
-        where: (user, { eq }) => eq(user.id, userId),
-    });
+// export const incrementGenerations = async (userId: string) => {
+//     const foundUser = await db.query.user.findFirst({
+//         where: () => eq(user.id, userId),
+//     });
 
-    if (!user) throw new Error("User not found");
-    if (user.generations !== null && user.generations >= 30) {
-        throw new Error("You reached the maximum # of generations.");
-    }
+//     if (!foundUser) throw new Error("User not found");
+//     if (foundUser.generations !== null && foundUser.generations >= 30) {
+//         throw new Error("You reached the maximum # of generations.");
+//     }
 
-    // await db.update(user)
-    // .set({ generations: sql`${user.generations} + 1` })
-    // .where(eq(user.id, userId))
-    // .get();
-};
+//     // await db.update(user)
+//     // .set({ generations: sql`${user.generations} + 1` })
+//     // .where(eq(user.id, userId))
+//     // .get();
+// };
 
 
 export const deleteUTVData = async () => {
