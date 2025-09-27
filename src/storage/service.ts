@@ -1,6 +1,13 @@
 import { TFolder } from '../types';
 import { supabase } from './supabaseClient';
 import JSZip from "jszip";
+import crypto from "crypto";
+
+
+
+const generateStableId = (fullPath: string): string => {
+  return crypto.createHash("md5").update(fullPath).digest("hex");
+}
 
 const listAllFiles = async (path: string, collectedPaths: string[] = []) => {
     const { data, error } = await supabase.storage.from('file-storage').list(path, { limit: 1000 });
@@ -194,7 +201,7 @@ export async function getFileContentByFullPath(fullPath: string): Promise<string
 
 export async function buildFolderTree(prefix: string, name: string): Promise<TFolder> {
 
-    const folderId = crypto.randomUUID();
+    const folderId = generateStableId(prefix);
 
     const folder: TFolder = {
         id: folderId,
@@ -216,7 +223,7 @@ export async function buildFolderTree(prefix: string, name: string): Promise<TFo
     for (const item of data) {
         const fullPath = prefix ? `${prefix}/${item.name}` : item.name;
         if (item.metadata) {
-            const fileId = crypto.randomUUID();
+            const fileId = generateStableId(fullPath);
             folder.children.push({
                 id: fileId,
                 type: "file",
@@ -240,7 +247,6 @@ export async function getFolderTreeInVirtualBox(userId: string, virtualBoxId: st
 
     try {
         const tree: TFolder = await buildFolderTree(rootPrefix, rootFolderName);
-        console.log(tree.children)
         return tree;
     } catch (error) {
         throw error
