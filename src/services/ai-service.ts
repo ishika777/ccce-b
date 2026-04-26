@@ -35,6 +35,7 @@ export const generateCode = async (
         },
     });
 
+    
     for await (const chunk of stream) {
         onChunk(chunk.text || "");
     }

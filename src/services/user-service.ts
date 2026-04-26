@@ -4,8 +4,7 @@ import { user } from "../database/schema";
 import { eq } from "drizzle-orm";
 
 export const getAllUsers = async () => {
-    const data = await db.select().from(user).all();
-    return data;
+    return await db.select().from(user).all();;
 }
 
 export const getUserWithEmail = async (email: string) => {

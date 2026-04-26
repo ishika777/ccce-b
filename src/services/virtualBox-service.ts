@@ -1,10 +1,14 @@
 import { db } from "../database";
-import { user, virtualBox, usersToVirtualboxes } from "../database/schema"
+import { virtualBox, usersToVirtualboxes } from "../database/schema"
 import { eq, and } from "drizzle-orm";
 
 export const deleteAllVirtualBoxes = async () => {
     return await db.delete(virtualBox).returning().get();
 }
+
+export const getAllVirtualBoxes = async () => {
+    return await db.select().from(virtualBox).all();
+};
 
 export const getAllVirtualBoxByUser = async (id: string) => {
     return await db.query.virtualBox.findMany({
@@ -27,8 +31,16 @@ export const getVirtualBoxByName = async (name: string) => {
     });
 }
 
-export const getAllVirtualBoxes = async () => {
-    return await db.select().from(virtualBox).all();
+export const createVirtualBox = async (data: {
+    type: "react" | "node";
+    name: string;
+    userId: string;
+    visibility: "public" | "private";
+}) => {
+    return await db.insert(virtualBox)
+        .values(data)
+        .returning()
+        .get();
 };
 
 
@@ -49,17 +61,7 @@ export const deleteVirtualBox = async (id: string, userId: string) => {
     return deleted;
 };
 
-export const createVirtualBox = async (data: {
-    type: "react" | "node";
-    name: string;
-    userId: string;
-    visibility: "public" | "private";
-}) => {
-    return await db.insert(virtualBox)
-        .values(data)
-        .returning()
-        .get();
-};
+
 
 export const updateVirtualBox = async (data: {
     id: string;

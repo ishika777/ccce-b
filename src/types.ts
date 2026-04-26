@@ -22,7 +22,6 @@ export type UsersToVirtualBoxesType = {
     virtualboxId: string;
 };
 
-
 export type TFolder = {
     id: string
     type: "folder"

@@ -43,4 +43,3 @@ async function fetchFilesRecursive(
 export async function fetchStarterFilesFromGitHub(folderName: string): Promise<StarterFile[]> {
     return fetchFilesRecursive(folderName);
 }
-

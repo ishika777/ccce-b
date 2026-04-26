@@ -48,6 +48,7 @@ export async function getSignedUrl(userId: string, virtualBoxId: string, fileNam
     return data.signedUrl;
 }
 
+
 export async function createProjectZip(userId: string, virtualBoxId: string): Promise<Buffer> {
     const baseFolder = `${userId}/${virtualBoxId}`;
     const zip = new JSZip();
@@ -241,9 +242,9 @@ export async function buildFolderTree(prefix: string, name: string): Promise<TFo
 }
 
 export async function getFolderTreeInVirtualBox(userId: string, virtualBoxId: string): Promise<TFolder> {
+    
     const rootPrefix = `${userId}/${virtualBoxId}`;
     const rootFolderName = virtualBoxId;
-
 
     try {
         const tree: TFolder = await buildFolderTree(rootPrefix, rootFolderName);
